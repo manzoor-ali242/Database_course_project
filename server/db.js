@@ -5,7 +5,17 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = path.join(__dirname, '..', 'canteen.db');
+const backupPath = path.join(__dirname, '..', 'canteen_backup.db');
 
+if (fs.existsSync(dbPath) && !fs.existsSync(backupPath)) {
+  try {
+    fs.copyFileSync(dbPath, backupPath);
+    fs.unlinkSync(dbPath);
+    console.log('Backed up old DB and reset for new constraints.');
+  } catch (e) {
+    console.error('Migration backup failed', e);
+  }
+}
 // ============================================================
 // Initialize sql.js (pure JavaScript SQLite via WebAssembly)
 // ============================================================
@@ -135,14 +145,14 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS Customers (
     CustomerID INTEGER PRIMARY KEY AUTOINCREMENT,
     Name TEXT NOT NULL,
-    Contact TEXT NOT NULL,
-    Email TEXT,
+    Contact TEXT NOT NULL UNIQUE,
+    Email TEXT UNIQUE,
     CreatedAt TEXT DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE TABLE IF NOT EXISTS FoodItems (
     ItemID INTEGER PRIMARY KEY AUTOINCREMENT,
-    ItemName TEXT NOT NULL,
+    ItemName TEXT NOT NULL UNIQUE,
     Category TEXT NOT NULL DEFAULT 'General',
     Price REAL NOT NULL CHECK(Price > 0),
     Availability INTEGER NOT NULL DEFAULT 1,
@@ -167,6 +177,49 @@ db.exec(`
     FOREIGN KEY (OrderID) REFERENCES Orders(OrderID) ON DELETE CASCADE,
     FOREIGN KEY (ItemID) REFERENCES FoodItems(ItemID) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS OrderAuditLog (
+    LogID INTEGER PRIMARY KEY AUTOINCREMENT,
+    OrderID INTEGER NOT NULL,
+    OldStatus TEXT,
+    NewStatus TEXT,
+    ChangedAt TEXT DEFAULT (datetime('now', 'localtime'))
+  );
+
+  CREATE TRIGGER IF NOT EXISTS log_order_status_update
+  AFTER UPDATE OF Status ON Orders
+  FOR EACH ROW
+  WHEN OLD.Status != NEW.Status
+  BEGIN
+    INSERT INTO OrderAuditLog (OrderID, OldStatus, NewStatus)
+    VALUES (NEW.OrderID, OLD.Status, NEW.Status);
+  END;
+
+  DROP VIEW IF EXISTS CustomerOrderSummary;
+  CREATE VIEW CustomerOrderSummary AS
+  SELECT 
+    c.CustomerID,
+    c.Name,
+    c.Contact,
+    c.Email,
+    c.CreatedAt,
+    COUNT(DISTINCT o.OrderID) AS TotalOrders,
+    COALESCE(SUM(od.Quantity * od.PriceAtOrder), 0) AS TotalSpent
+  FROM Customers c
+  LEFT JOIN Orders o ON c.CustomerID = o.CustomerID
+  LEFT JOIN OrderDetails od ON o.OrderID = od.OrderID
+  GROUP BY c.CustomerID;
+
+  DROP VIEW IF EXISTS DailySales;
+  CREATE VIEW DailySales AS
+  SELECT 
+    date(OrderDate) AS Date,
+    COUNT(DISTINCT o.OrderID) AS TotalOrders,
+    SUM(od.Quantity * od.PriceAtOrder) AS Revenue
+  FROM Orders o
+  JOIN OrderDetails od ON o.OrderID = od.OrderID
+  WHERE o.Status != 'Cancelled'
+  GROUP BY date(OrderDate);
 `);
 
 // ============================================================

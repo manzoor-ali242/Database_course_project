@@ -7,14 +7,7 @@ const router = Router();
 router.get('/', (req, res) => {
   try {
     const customers = db.prepare(`
-      SELECT c.*, 
-        COUNT(DISTINCT o.OrderID) as TotalOrders,
-        COALESCE(SUM(od.Quantity * od.PriceAtOrder), 0) as TotalSpent
-      FROM Customers c
-      LEFT JOIN Orders o ON c.CustomerID = o.CustomerID
-      LEFT JOIN OrderDetails od ON o.OrderID = od.OrderID
-      GROUP BY c.CustomerID
-      ORDER BY c.CreatedAt DESC
+      SELECT * FROM CustomerOrderSummary ORDER BY CreatedAt DESC
     `).all();
     res.json(customers);
   } catch (err) {
@@ -43,6 +36,12 @@ router.post('/', (req, res) => {
     const customer = db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(result.lastInsertRowid);
     res.status(201).json(customer);
   } catch (err) {
+    if (err.message.includes('UNIQUE constraint failed: Customers.Contact')) {
+      return res.status(400).json({ error: 'A customer with this contact number already exists.' });
+    }
+    if (err.message.includes('UNIQUE constraint failed: Customers.Email')) {
+      return res.status(400).json({ error: 'A customer with this email already exists.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -61,6 +60,12 @@ router.put('/:id', (req, res) => {
     const customer = db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(req.params.id);
     res.json(customer);
   } catch (err) {
+    if (err.message.includes('UNIQUE constraint failed: Customers.Contact')) {
+      return res.status(400).json({ error: 'A customer with this contact number already exists.' });
+    }
+    if (err.message.includes('UNIQUE constraint failed: Customers.Email')) {
+      return res.status(400).json({ error: 'A customer with this email already exists.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });

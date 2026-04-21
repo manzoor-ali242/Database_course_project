@@ -44,6 +44,9 @@ router.post('/', (req, res) => {
     const item = db.prepare('SELECT * FROM FoodItems WHERE ItemID = ?').get(result.lastInsertRowid);
     res.status(201).json(item);
   } catch (err) {
+    if (err.message.includes('UNIQUE constraint failed: FoodItems.ItemName')) {
+      return res.status(400).json({ error: 'A food item with this name already exists.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -63,6 +66,9 @@ router.put('/:id', (req, res) => {
     const item = db.prepare('SELECT * FROM FoodItems WHERE ItemID = ?').get(req.params.id);
     res.json(item);
   } catch (err) {
+    if (err.message.includes('UNIQUE constraint failed: FoodItems.ItemName')) {
+      return res.status(400).json({ error: 'A food item with this name already exists.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });

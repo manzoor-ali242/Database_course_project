@@ -22,12 +22,12 @@ router.get('/dashboard', (req, res) => {
       WHERE date(OrderDate) = date('now', 'localtime')
     `).get().count;
 
-    const todayRevenue = db.prepare(`
-      SELECT COALESCE(SUM(od.Quantity * od.PriceAtOrder), 0) as total
-      FROM OrderDetails od
-      JOIN Orders o ON od.OrderID = o.OrderID
-      WHERE date(o.OrderDate) = date('now', 'localtime') AND o.Status != 'Cancelled'
-    `).get().total;
+    const todayRevenueResult = db.prepare(`
+      SELECT Revenue as total
+      FROM DailySales
+      WHERE Date = date('now', 'localtime')
+    `).get();
+    const todayRevenue = todayRevenueResult ? todayRevenueResult.total : 0;
 
     const pendingOrders = db.prepare(`
       SELECT COUNT(*) as count FROM Orders WHERE Status IN ('Pending', 'Preparing')
@@ -56,14 +56,11 @@ router.get('/dashboard', (req, res) => {
 router.get('/daily-sales', (req, res) => {
   try {
     const sales = db.prepare(`
-      SELECT date(o.OrderDate) as Date,
-        COUNT(DISTINCT o.OrderID) as OrderCount,
-        SUM(od.Quantity * od.PriceAtOrder) as Revenue
-      FROM Orders o
-      JOIN OrderDetails od ON o.OrderID = od.OrderID
-      WHERE o.Status != 'Cancelled'
-        AND date(o.OrderDate) >= date('now', 'localtime', '-6 days')
-      GROUP BY date(o.OrderDate)
+      SELECT Date,
+        TotalOrders as OrderCount,
+        Revenue
+      FROM DailySales
+      WHERE Date >= date('now', 'localtime', '-6 days')
       ORDER BY Date ASC
     `).all();
     res.json(sales);
