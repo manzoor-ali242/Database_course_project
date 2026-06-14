@@ -120,6 +120,7 @@ export default function OrderHistory() {
                     <th>Customer</th>
                     <th>Date</th>
                     <th>Items</th>
+                    <th>Payment</th>
                     <th>Status</th>
                     <th className="text-right">Total</th>
                     <th className="text-right">Actions</th>
@@ -135,6 +136,15 @@ export default function OrderHistory() {
                       <td className="font-bold">{o.CustomerName}</td>
                       <td className="text-secondary" style={{ fontSize: '0.82rem' }}>{formatDate(o.OrderDate)}</td>
                       <td>{o.TotalQuantity} items</td>
+                      <td>
+                        <span className="badge" style={{
+                          background: o.PaymentMethod === 'Wallet' ? 'var(--success-bg)' : 'var(--info-bg)',
+                          color: o.PaymentMethod === 'Wallet' ? 'var(--success)' : 'var(--info)',
+                          fontSize: '0.72rem'
+                        }}>
+                          {o.PaymentMethod === 'Wallet' ? '💳 Wallet' : '💵 Cash'}
+                        </span>
+                      </td>
                       <td>
                         <select
                           className="status-select"
@@ -184,11 +194,23 @@ export default function OrderHistory() {
               </span>
             </div>
 
-            <div className="mb-4">
-              <div className="form-label">Customer</div>
-              <div className="font-bold">{orderDetail.CustomerName}</div>
-              <div className="text-secondary" style={{ fontSize: '0.82rem' }}>
-                {orderDetail.Contact} {orderDetail.Email && `• ${orderDetail.Email}`}
+            <div className="mb-4" style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: '16px' }}>
+              <div>
+                <div className="form-label">Customer</div>
+                <div className="font-bold">{orderDetail.CustomerName}</div>
+                <div className="text-secondary" style={{ fontSize: '0.82rem' }}>
+                  {orderDetail.Contact} {orderDetail.Email && `• ${orderDetail.Email}`}
+                </div>
+              </div>
+              <div>
+                <div className="form-label">Payment</div>
+                <span className="badge" style={{
+                  background: orderDetail.PaymentMethod === 'Wallet' ? 'var(--success-bg)' : 'var(--info-bg)',
+                  color: orderDetail.PaymentMethod === 'Wallet' ? 'var(--success)' : 'var(--info)',
+                  fontSize: '0.72rem', marginTop: '4px'
+                }}>
+                  {orderDetail.PaymentMethod === 'Wallet' ? '💳 Wallet' : '💵 Cash'}
+                </span>
               </div>
             </div>
 
@@ -217,6 +239,18 @@ export default function OrderHistory() {
                 <span>Total Bill</span>
                 <span>Rs. {Number(orderDetail.TotalAmount).toLocaleString()}</span>
               </div>
+              {orderDetail.Status === 'Delivered' && (
+                <div className="order-summary-row" style={{ marginTop: '8px', color: 'var(--accent)', fontWeight: 600 }}>
+                  <span>Loyalty Points Earned</span>
+                  <span>+{Math.floor(orderDetail.TotalAmount * 0.10)} pts</span>
+                </div>
+              )}
+              {orderDetail.Status === 'Cancelled' && orderDetail.PaymentMethod === 'Wallet' && (
+                <div className="order-summary-row" style={{ marginTop: '8px', color: 'var(--success)', fontWeight: 600 }}>
+                  <span>Refunded to Wallet</span>
+                  <span>Rs. {Number(orderDetail.TotalAmount).toFixed(2)}</span>
+                </div>
+              )}
             </div>
 
             <button

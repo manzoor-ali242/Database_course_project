@@ -81,4 +81,35 @@ router.delete('/:id', (req, res) => {
   }
 });
 
+// POST top up customer wallet (Stored Procedure Equivalent)
+router.post('/:id/wallet/topup', (req, res) => {
+  try {
+    const { amount } = req.body;
+    const customerId = req.params.id;
+
+    if (amount === undefined || isNaN(amount) || parseFloat(amount) <= 0) {
+      return res.status(400).json({ error: 'A valid top-up amount greater than 0 is required.' });
+    }
+
+    // Encapsulated transaction (Stored Procedure style)
+    const sp_topup_wallet = db.transaction((id, amt) => {
+      const customer = db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(id);
+      if (!customer) throw new Error('Customer not found');
+
+      db.prepare('UPDATE Customers SET WalletBalance = WalletBalance + ? WHERE CustomerID = ?')
+        .run(amt, id);
+
+      return db.prepare('SELECT CustomerID, Name, WalletBalance, LoyaltyPoints FROM Customers WHERE CustomerID = ?').get(id);
+    });
+
+    const updatedCustomer = sp_topup_wallet(customerId, parseFloat(amount));
+    res.json({ message: 'Wallet topped up successfully', customer: updatedCustomer });
+  } catch (err) {
+    if (err.message === 'Customer not found') {
+      return res.status(404).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

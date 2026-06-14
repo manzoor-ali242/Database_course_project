@@ -218,6 +218,8 @@ Testing the system to ensure correct functionality:
 | Name | TEXT | NOT NULL | Customer full name |
 | Contact | TEXT | NOT NULL | Phone number |
 | Email | TEXT | — | Email address (optional) |
+| WalletBalance | REAL | NOT NULL, DEFAULT 500.0, CHECK(WalletBalance >= 0) | Digital wallet cash balance |
+| LoyaltyPoints | INTEGER | NOT NULL, DEFAULT 0, CHECK(LoyaltyPoints >= 0) | Reward points balance |
 | CreatedAt | TEXT | DEFAULT datetime('now') | Registration timestamp |
 
 #### Table: FoodItems
@@ -238,6 +240,7 @@ Testing the system to ensure correct functionality:
 | CustomerID | INTEGER | FOREIGN KEY → Customers(CustomerID) | Customer who placed the order |
 | OrderDate | TEXT | DEFAULT datetime('now') | Order placement timestamp |
 | Status | TEXT | CHECK(IN: Pending, Preparing, Ready, Delivered, Cancelled) | Current order status |
+| PaymentMethod | TEXT | NOT NULL, DEFAULT 'Cash', CHECK(PaymentMethod IN ('Cash', 'Wallet')) | Payment method used |
 
 #### Table: OrderDetails
 | Attribute | Data Type | Constraint | Description |
@@ -291,6 +294,8 @@ CREATE TABLE IF NOT EXISTS Customers (
     Name TEXT NOT NULL,
     Contact TEXT NOT NULL,
     Email TEXT,
+    WalletBalance REAL NOT NULL DEFAULT 500.0 CHECK(WalletBalance >= 0),
+    LoyaltyPoints INTEGER NOT NULL DEFAULT 0 CHECK(LoyaltyPoints >= 0),
     CreatedAt TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -310,6 +315,7 @@ CREATE TABLE IF NOT EXISTS Orders (
     OrderDate TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     Status TEXT NOT NULL DEFAULT 'Pending'
         CHECK(Status IN ('Pending','Preparing','Ready','Delivered','Cancelled')),
+    PaymentMethod TEXT NOT NULL DEFAULT 'Cash' CHECK(PaymentMethod IN ('Cash', 'Wallet')),
     FOREIGN KEY (CustomerID) REFERENCES Customers(CustomerID) ON DELETE CASCADE
 );
 
@@ -504,20 +510,145 @@ WHERE o.Status != 'Cancelled';
 ```sql
 BEGIN TRANSACTION;
 
--- Step 1: Create the order
-INSERT INTO Orders (CustomerID) VALUES (1);
+-- Step 1: Create the order (specifying payment method)
+INSERT INTO Orders (CustomerID, PaymentMethod) VALUES (1, 'Wallet');
 
--- Step 2: Get the new order ID
--- (In code: lastInsertRowid)
+-- Step 2: Get the new order ID (e.g. 12)
 
--- Step 3: Insert order details
+-- Step 3: Insert order details (which fire the wallet deduction trigger)
 INSERT INTO OrderDetails (OrderID, ItemID, Quantity, PriceAtOrder)
     VALUES (12, 1, 2, 250);
 INSERT INTO OrderDetails (OrderID, ItemID, Quantity, PriceAtOrder)
     VALUES (12, 7, 1, 180);
 
 COMMIT;
--- If any step fails, ROLLBACK is executed to maintain data integrity
+-- If any step fails (e.g., wallet balance drops below 0), ROLLBACK is executed.
+```
+
+---
+
+### 9.4 Triggers (Automated Event Logic)
+
+Triggers automate processes upon data changes and enforce complex database integrity rules.
+
+#### Trigger 1: Wallet Balance Auto-Deduction
+Fires `AFTER INSERT` on `OrderDetails`. If the parent order's `PaymentMethod` is `'Wallet'`, it automatically decrements the total price from the customer's wallet. If the wallet goes below 0, the customer's table `CHECK` constraint fails and the transaction is aborted.
+
+```sql
+CREATE TRIGGER IF NOT EXISTS deduct_wallet_on_order_detail
+AFTER INSERT ON OrderDetails
+WHEN (SELECT PaymentMethod FROM Orders WHERE OrderID = NEW.OrderID) = 'Wallet'
+BEGIN
+  UPDATE Customers
+  SET WalletBalance = WalletBalance - (NEW.Quantity * NEW.PriceAtOrder)
+  WHERE CustomerID = (SELECT CustomerID FROM Orders WHERE OrderID = NEW.OrderID);
+END;
+```
+
+#### Trigger 2: Wallet Refund on Order Cancellation
+Fires `AFTER UPDATE` of `Status` on `Orders`. If the status changes to `'Cancelled'` and payment was made via `'Wallet'`, the database automatically calculates the sum of the order items and refunds it back to the customer's wallet.
+
+```sql
+CREATE TRIGGER IF NOT EXISTS refund_wallet_on_cancel
+AFTER UPDATE OF Status ON Orders
+FOR EACH ROW
+WHEN NEW.Status = 'Cancelled' AND OLD.Status != 'Cancelled' AND OLD.PaymentMethod = 'Wallet'
+BEGIN
+  UPDATE Customers
+  SET WalletBalance = WalletBalance + (
+    SELECT COALESCE(SUM(Quantity * PriceAtOrder), 0)
+    FROM OrderDetails
+    WHERE OrderID = NEW.OrderID
+  )
+  WHERE CustomerID = NEW.CustomerID;
+END;
+```
+
+#### Trigger 3: Loyalty Points Awarding on Successful Delivery
+Fires `AFTER UPDATE` of `Status` on `Orders`. When an order status updates to `'Delivered'`, it calculates 10% of the total order value and credits it as loyalty points to the customer's account.
+
+```sql
+CREATE TRIGGER IF NOT EXISTS award_loyalty_points
+AFTER UPDATE OF Status ON Orders
+FOR EACH ROW
+WHEN NEW.Status = 'Delivered' AND OLD.Status != 'Delivered'
+BEGIN
+  UPDATE Customers
+  SET LoyaltyPoints = LoyaltyPoints + CAST((
+    SELECT COALESCE(SUM(Quantity * PriceAtOrder), 0) * 0.10
+    FROM OrderDetails
+    WHERE OrderID = NEW.OrderID
+  ) AS INTEGER)
+  WHERE CustomerID = NEW.CustomerID;
+END;
+```
+
+---
+
+### 9.5 Indexing (Performance Optimization)
+
+SQLite automatically indexes primary keys and unique columns, but does not index foreign keys. We explicitly added index definitions to optimize performance for the frequent `JOIN` queries between `Orders`, `OrderDetails`, and `Customers`.
+
+```sql
+-- Optimize lookups for customer orders
+CREATE INDEX IF NOT EXISTS idx_orders_customer ON Orders(CustomerID);
+
+-- Optimize join queries between Orders and OrderDetails
+CREATE INDEX IF NOT EXISTS idx_orderdetails_order ON OrderDetails(OrderID);
+
+-- Optimize join queries between OrderDetails and FoodItems
+CREATE INDEX IF NOT EXISTS idx_orderdetails_item ON OrderDetails(ItemID);
+```
+
+#### Verification via Explain Query Plan
+Running `EXPLAIN QUERY PLAN` shows that SQLite utilizes `idx_orderdetails_order` rather than performing a full-table scan (O(N)) when showing itemized details for a single order, resulting in an O(log N) lookup time.
+
+---
+
+### 9.6 Stored Procedures (SQLite Transaction Blocks)
+
+SQLite does not support native `CREATE PROCEDURE` syntax. To demonstrate stored procedure concepts, we encapsulate transactional, multi-query business logic on the backend application server inside structured database transaction functions.
+
+#### 1. Place Order Procedure (`sp_place_order`)
+Wraps the double insert (creating the order first, then looping and inserting each item in `OrderDetails`) in a single database transaction. This ensures that if any item insertion fails (or the wallet balance check is violated), the entire order is rolled back (Atomicity).
+
+```javascript
+// JavaScript equivalent of a database Stored Procedure
+const sp_place_order = db.transaction((custId, paymentMthd, orderItems) => {
+  // 1. Insert parent order
+  const orderResult = db.prepare(
+    'INSERT INTO Orders (CustomerID, PaymentMethod) VALUES (?, ?)'
+  ).run(custId, paymentMthd);
+  
+  const orderId = orderResult.lastInsertRowid;
+  const insertDetail = db.prepare(
+    'INSERT INTO OrderDetails (OrderID, ItemID, Quantity, PriceAtOrder) VALUES (?, ?, ?, ?)'
+  );
+
+  // 2. Loop and insert details (fires the deduct_wallet trigger)
+  for (const item of orderItems) {
+    const food = db.prepare('SELECT * FROM FoodItems WHERE ItemID = ? AND Availability = 1').get(item.ItemID);
+    if (!food) throw new Error(`Food item ${item.ItemID} not found or unavailable`);
+    insertDetail.run(orderId, item.ItemID, item.Quantity, food.Price);
+  }
+
+  return orderId;
+});
+```
+
+#### 2. Top-Up Wallet Procedure (`sp_topup_wallet`)
+Ensures that verifying the customer exists and updating their balance is handled atomically.
+
+```javascript
+const sp_topup_wallet = db.transaction((id, amt) => {
+  const customer = db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(id);
+  if (!customer) throw new Error('Customer not found');
+
+  db.prepare('UPDATE Customers SET WalletBalance = WalletBalance + ? WHERE CustomerID = ?')
+    .run(amt, id);
+
+  return db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(id);
+});
 ```
 
 ---

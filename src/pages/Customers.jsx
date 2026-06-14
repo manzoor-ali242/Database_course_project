@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, Edit2, Trash2, Phone, Mail } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, Phone, Mail, Wallet } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function Customers() {
@@ -9,6 +9,9 @@ export default function Customers() {
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ Name: '', Contact: '', Email: '' })
+  const [showTopupModal, setShowTopupModal] = useState(false)
+  const [topupAmount, setTopupAmount] = useState('')
+  const [topupCustomer, setTopupCustomer] = useState(null)
 
   const fetchCustomers = () => {
     fetch('/api/customers').then(r => r.json()).then(data => {
@@ -68,6 +71,34 @@ export default function Customers() {
     }
   }
 
+  const openTopup = (customer) => {
+    setTopupCustomer(customer)
+    setTopupAmount('')
+    setShowTopupModal(true)
+  }
+
+  const handleTopup = async (e) => {
+    e.preventDefault()
+    if (!topupAmount || isNaN(topupAmount) || parseFloat(topupAmount) <= 0) {
+      return toast.error('Please enter a valid top-up amount')
+    }
+
+    const res = await fetch(`/api/customers/${topupCustomer.CustomerID}/wallet/topup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: parseFloat(topupAmount) })
+    })
+
+    if (res.ok) {
+      toast.success('Wallet topped up successfully!')
+      setShowTopupModal(false)
+      fetchCustomers()
+    } else {
+      const err = await res.json()
+      toast.error(err.error)
+    }
+  }
+
   if (loading) return <div className="loading"><div className="spinner" /></div>
 
   return (
@@ -112,6 +143,8 @@ export default function Customers() {
                   <th>Name</th>
                   <th>Contact</th>
                   <th>Email</th>
+                  <th className="text-right">Wallet</th>
+                  <th className="text-right">Loyalty Points</th>
                   <th>Orders</th>
                   <th className="text-right">Total Spent</th>
                   <th className="text-right">Actions</th>
@@ -136,6 +169,12 @@ export default function Customers() {
                         </span>
                       ) : <span className="text-muted">—</span>}
                     </td>
+                    <td className="text-right font-bold text-success">
+                      Rs. {Number(c.WalletBalance || 0).toFixed(2)}
+                    </td>
+                    <td className="text-right text-accent font-bold">
+                      {c.LoyaltyPoints || 0} pts
+                    </td>
                     <td>
                       <span className="badge preparing">{c.TotalOrders}</span>
                     </td>
@@ -144,6 +183,9 @@ export default function Customers() {
                     </td>
                     <td className="text-right">
                       <div className="btn-group" style={{ justifyContent: 'flex-end' }}>
+                        <button className="btn btn-ghost btn-icon" onClick={() => openTopup(c)} title="Top Up Wallet" style={{ color: 'var(--success)' }}>
+                          <Wallet style={{ width: 16, height: 16 }} />
+                        </button>
                         <button className="btn btn-ghost btn-icon" onClick={() => openEdit(c)} title="Edit">
                           <Edit2 style={{ width: 16, height: 16 }} />
                         </button>
@@ -204,6 +246,42 @@ export default function Customers() {
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
                 <button type="submit" className="btn btn-primary">{editing ? 'Update' : 'Add Customer'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Top Up Wallet Modal */}
+      {showTopupModal && topupCustomer && (
+        <div className="modal-overlay" onClick={() => setShowTopupModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Top Up Wallet</h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowTopupModal(false)}>✕</button>
+            </div>
+            <form onSubmit={handleTopup}>
+              <div className="modal-body">
+                <p className="mb-4">
+                  Top up wallet for <strong>{topupCustomer.Name}</strong>. Current balance: <strong>Rs. {Number(topupCustomer.WalletBalance || 0).toFixed(2)}</strong>.
+                </p>
+                <div className="form-group">
+                  <label className="form-label">Amount (Rs.) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="form-input"
+                    placeholder="Enter amount to add"
+                    value={topupAmount}
+                    onChange={e => setForm(prev => ({ ...prev })) || setTopupAmount(e.target.value)}
+                    autoFocus
+                    required
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowTopupModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" style={{ backgroundColor: 'var(--success)', borderColor: 'var(--success)' }}>Add Balance</button>
               </div>
             </form>
           </div>

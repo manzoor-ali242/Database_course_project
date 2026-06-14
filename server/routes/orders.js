@@ -7,7 +7,7 @@ const router = Router();
 router.get('/', (req, res) => {
   try {
     const orders = db.prepare(`
-      SELECT o.OrderID, o.OrderDate, o.Status,
+      SELECT o.OrderID, o.OrderDate, o.Status, o.PaymentMethod,
         c.CustomerID, c.Name as CustomerName, c.Contact,
         COUNT(od.DetailID) as ItemCount,
         SUM(od.Quantity) as TotalQuantity,
@@ -28,7 +28,7 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   try {
     const order = db.prepare(`
-      SELECT o.OrderID, o.OrderDate, o.Status,
+      SELECT o.OrderID, o.OrderDate, o.Status, o.PaymentMethod,
         c.CustomerID, c.Name as CustomerName, c.Contact, c.Email
       FROM Orders o
       JOIN Customers c ON o.CustomerID = c.CustomerID
@@ -54,23 +54,28 @@ router.get('/:id', (req, res) => {
   }
 });
 
-// POST create a new order (Transaction)
+// POST create a new order (Stored Procedure Equivalent using Transaction)
 router.post('/', (req, res) => {
   try {
-    const { CustomerID, items } = req.body;
+    const { CustomerID, PaymentMethod, items } = req.body;
     if (!CustomerID || !items || items.length === 0) {
       return res.status(400).json({ error: 'CustomerID and at least one item are required' });
+    }
+
+    const payMethod = PaymentMethod || 'Cash';
+    if (!['Cash', 'Wallet'].includes(payMethod)) {
+      return res.status(400).json({ error: 'Invalid payment method' });
     }
 
     // Verify customer exists
     const customer = db.prepare('SELECT * FROM Customers WHERE CustomerID = ?').get(CustomerID);
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-    // Use a transaction for data integrity
-    const createOrder = db.transaction((custId, orderItems) => {
+    // Stored Procedure equivalent: transaction block in Express/Node.js
+    const sp_place_order = db.transaction((custId, paymentMthd, orderItems) => {
       const orderResult = db.prepare(
-        'INSERT INTO Orders (CustomerID) VALUES (?)'
-      ).run(custId);
+        'INSERT INTO Orders (CustomerID, PaymentMethod) VALUES (?, ?)'
+      ).run(custId, paymentMthd);
       
       const orderId = orderResult.lastInsertRowid;
       const insertDetail = db.prepare(
@@ -86,11 +91,11 @@ router.post('/', (req, res) => {
       return orderId;
     });
 
-    const orderId = createOrder(CustomerID, items);
+    const orderId = sp_place_order(CustomerID, payMethod, items);
     
-    // Fetch the complete order
+    // Fetch the complete order details
     const order = db.prepare(`
-      SELECT o.OrderID, o.OrderDate, o.Status,
+      SELECT o.OrderID, o.OrderDate, o.Status, o.PaymentMethod,
         c.Name as CustomerName,
         SUM(od.Quantity * od.PriceAtOrder) as TotalAmount
       FROM Orders o
@@ -102,6 +107,9 @@ router.post('/', (req, res) => {
 
     res.status(201).json(order);
   } catch (err) {
+    if (err.message.includes('CONSTRAINT failed') || err.message.includes('WalletBalance')) {
+      return res.status(400).json({ error: 'Transaction failed: Insufficient wallet balance.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });

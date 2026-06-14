@@ -9,6 +9,7 @@ export default function NewOrder() {
   const [foodItems, setFoodItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedCustomer, setSelectedCustomer] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('Cash')
   const [cart, setCart] = useState([]) // [{ItemID, ItemName, Price, ImageEmoji, Quantity}]
   const [search, setSearch] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -56,12 +57,18 @@ export default function NewOrder() {
     if (!selectedCustomer) return toast.error('Please select a customer')
     if (cart.length === 0) return toast.error('Please add items to the order')
 
+    const customer = customers.find(c => c.CustomerID === Number(selectedCustomer))
+    if (paymentMethod === 'Wallet' && customer && subtotal > (customer.WalletBalance || 0)) {
+      return toast.error('Insufficient wallet balance!')
+    }
+
     setSubmitting(true)
     const res = await fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         CustomerID: Number(selectedCustomer),
+        PaymentMethod: paymentMethod,
         items: cart.map(c => ({ ItemID: c.ItemID, Quantity: c.Quantity }))
       })
     })
@@ -89,14 +96,17 @@ export default function NewOrder() {
       <div className="data-grid" style={{ gridTemplateColumns: '1fr 380px' }}>
         {/* Left - Menu */}
         <div>
-          {/* Customer Select */}
+          {/* Customer Select & Payment Method */}
           <div className="card mb-4">
-            <div className="form-group" style={{ marginBottom: 0 }}>
+            <div className="form-group mb-3">
               <label className="form-label">Select Customer *</label>
               <select
                 className="form-select"
                 value={selectedCustomer}
-                onChange={e => setSelectedCustomer(e.target.value)}
+                onChange={e => {
+                  setSelectedCustomer(e.target.value)
+                  if (!e.target.value) setPaymentMethod('Cash')
+                }}
               >
                 <option value="">-- Choose a customer --</option>
                 {customers.map(c => (
@@ -106,6 +116,45 @@ export default function NewOrder() {
                 ))}
               </select>
             </div>
+
+            {selectedCustomer && (() => {
+              const customer = customers.find(c => c.CustomerID === Number(selectedCustomer))
+              if (!customer) return null
+              return (
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  background: 'rgba(255,255,255,0.05)', padding: '10px 14px', borderRadius: '6px',
+                  fontSize: '0.85rem', border: '1px solid rgba(255,255,255,0.1)'
+                }}>
+                  <div>Wallet Balance: <span className="font-bold text-success" style={{ color: 'var(--success)' }}>Rs. {Number(customer.WalletBalance || 0).toFixed(2)}</span></div>
+                  <div>Loyalty Points: <span className="font-bold text-accent" style={{ color: 'var(--accent)' }}>{customer.LoyaltyPoints || 0} pts</span></div>
+                </div>
+              )
+            })()}
+
+            {selectedCustomer && (
+              <div className="form-group mt-3" style={{ marginBottom: 0 }}>
+                <label className="form-label">Payment Method</label>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    type="button"
+                    className={`btn ${paymentMethod === 'Cash' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPaymentMethod('Cash')}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    💵 Cash on Counter
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${paymentMethod === 'Wallet' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPaymentMethod('Wallet')}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    💳 Digital Wallet
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Menu Items */}
@@ -209,11 +258,32 @@ export default function NewOrder() {
                 </div>
               </div>
 
+              {(() => {
+                const customer = customers.find(c => c.CustomerID === Number(selectedCustomer))
+                const hasInsufficient = paymentMethod === 'Wallet' && customer && subtotal > (customer.WalletBalance || 0)
+                if (hasInsufficient) {
+                  return (
+                    <div style={{
+                      marginTop: '12px', background: 'rgba(239, 68, 68, 0.1)',
+                      color: 'var(--danger)', border: '1px solid rgba(239, 68, 68, 0.2)',
+                      padding: '10px', borderRadius: '6px', fontSize: '0.82rem',
+                      lineHeight: 1.4, textAlign: 'center'
+                    }}>
+                      ⚠️ Insufficient balance! (Wallet: Rs. {Number(customer.WalletBalance || 0).toFixed(2)})
+                    </div>
+                  )
+                }
+                return null
+              })()}
+
               <button
                 className="btn btn-primary mt-4"
                 style={{ width: '100%', justifyContent: 'center', padding: '14px' }}
                 onClick={handlePlaceOrder}
-                disabled={submitting}
+                disabled={submitting || (() => {
+                  const customer = customers.find(c => c.CustomerID === Number(selectedCustomer))
+                  return paymentMethod === 'Wallet' && customer && subtotal > (customer.WalletBalance || 0)
+                })()}
               >
                 <ShoppingCart />
                 {submitting ? 'Placing Order...' : 'Place Order'}

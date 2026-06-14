@@ -147,6 +147,8 @@ db.exec(`
     Name TEXT NOT NULL,
     Contact TEXT NOT NULL UNIQUE,
     Email TEXT UNIQUE,
+    WalletBalance REAL NOT NULL DEFAULT 500.0 CHECK(WalletBalance >= 0),
+    LoyaltyPoints INTEGER NOT NULL DEFAULT 0 CHECK(LoyaltyPoints >= 0),
     CreatedAt TEXT DEFAULT (datetime('now', 'localtime'))
   );
 
@@ -165,6 +167,7 @@ db.exec(`
     CustomerID INTEGER NOT NULL,
     OrderDate TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     Status TEXT NOT NULL DEFAULT 'Pending' CHECK(Status IN ('Pending', 'Preparing', 'Ready', 'Delivered', 'Cancelled')),
+    PaymentMethod TEXT NOT NULL DEFAULT 'Cash' CHECK(PaymentMethod IN ('Cash', 'Wallet')),
     FOREIGN KEY (CustomerID) REFERENCES Customers(CustomerID) ON DELETE CASCADE
   );
 
@@ -185,7 +188,34 @@ db.exec(`
     NewStatus TEXT,
     ChangedAt TEXT DEFAULT (datetime('now', 'localtime'))
   );
+`);
 
+// Apply migrations for existing tables safely if they don't have the new columns yet
+try {
+  db.exec("ALTER TABLE Customers ADD COLUMN WalletBalance REAL NOT NULL DEFAULT 500.0 CHECK(WalletBalance >= 0)");
+} catch (e) {
+  // Column already exists or table doesn't exist yet
+}
+
+try {
+  db.exec("ALTER TABLE Customers ADD COLUMN LoyaltyPoints INTEGER NOT NULL DEFAULT 0 CHECK(LoyaltyPoints >= 0)");
+} catch (e) {
+  // Column already exists or table doesn't exist yet
+}
+
+try {
+  db.exec("ALTER TABLE Orders ADD COLUMN PaymentMethod TEXT NOT NULL DEFAULT 'Cash' CHECK(PaymentMethod IN ('Cash', 'Wallet'))");
+} catch (e) {
+  // Column already exists or table doesn't exist yet
+}
+
+db.exec(`
+  -- Indexing to optimize performance for JOIN lookups
+  CREATE INDEX IF NOT EXISTS idx_orders_customer ON Orders(CustomerID);
+  CREATE INDEX IF NOT EXISTS idx_orderdetails_order ON OrderDetails(OrderID);
+  CREATE INDEX IF NOT EXISTS idx_orderdetails_item ON OrderDetails(ItemID);
+
+  -- Trigger: Log order status changes
   CREATE TRIGGER IF NOT EXISTS log_order_status_update
   AFTER UPDATE OF Status ON Orders
   FOR EACH ROW
@@ -195,6 +225,47 @@ db.exec(`
     VALUES (NEW.OrderID, OLD.Status, NEW.Status);
   END;
 
+  -- Trigger: Deduct from customer's wallet balance when adding items to a wallet-paid order
+  CREATE TRIGGER IF NOT EXISTS deduct_wallet_on_order_detail
+  AFTER INSERT ON OrderDetails
+  WHEN (SELECT PaymentMethod FROM Orders WHERE OrderID = NEW.OrderID) = 'Wallet'
+  BEGIN
+    UPDATE Customers
+    SET WalletBalance = WalletBalance - (NEW.Quantity * NEW.PriceAtOrder)
+    WHERE CustomerID = (SELECT CustomerID FROM Orders WHERE OrderID = NEW.OrderID);
+  END;
+
+  -- Trigger: Refund customer's wallet if a wallet-paid order is cancelled
+  CREATE TRIGGER IF NOT EXISTS refund_wallet_on_cancel
+  AFTER UPDATE OF Status ON Orders
+  FOR EACH ROW
+  WHEN NEW.Status = 'Cancelled' AND OLD.Status != 'Cancelled' AND OLD.PaymentMethod = 'Wallet'
+  BEGIN
+    UPDATE Customers
+    SET WalletBalance = WalletBalance + (
+      SELECT COALESCE(SUM(Quantity * PriceAtOrder), 0)
+      FROM OrderDetails
+      WHERE OrderID = NEW.OrderID
+    )
+    WHERE CustomerID = NEW.CustomerID;
+  END;
+
+  -- Trigger: Award loyalty points (10% of order value) when status changes to 'Delivered'
+  CREATE TRIGGER IF NOT EXISTS award_loyalty_points
+  AFTER UPDATE OF Status ON Orders
+  FOR EACH ROW
+  WHEN NEW.Status = 'Delivered' AND OLD.Status != 'Delivered'
+  BEGIN
+    UPDATE Customers
+    SET LoyaltyPoints = LoyaltyPoints + CAST((
+      SELECT COALESCE(SUM(Quantity * PriceAtOrder), 0) * 0.10
+      FROM OrderDetails
+      WHERE OrderID = NEW.OrderID
+    ) AS INTEGER)
+    WHERE CustomerID = NEW.CustomerID;
+  END;
+
+  -- Re-create views incorporating the new wallet and loyalty columns
   DROP VIEW IF EXISTS CustomerOrderSummary;
   CREATE VIEW CustomerOrderSummary AS
   SELECT 
@@ -202,6 +273,8 @@ db.exec(`
     c.Name,
     c.Contact,
     c.Email,
+    c.WalletBalance,
+    c.LoyaltyPoints,
     c.CreatedAt,
     COUNT(DISTINCT o.OrderID) AS TotalOrders,
     COALESCE(SUM(od.Quantity * od.PriceAtOrder), 0) AS TotalSpent
